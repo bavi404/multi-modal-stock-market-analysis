@@ -7,12 +7,14 @@ from .data_gathering_agent import DataGatheringAgent
 from .sentiment_agent import SentimentAgent
 from .price_prediction_agent import PricePredictionAgent
 from .knowledge_agent import KnowledgeAgent
+from .emotion_agent import EmotionAgent
 
 __all__ = [
     'OrchestratorAgent',
     'DataGatheringAgent', 
     'SentimentAgent',
     'PricePredictionAgent',
-    'KnowledgeAgent'
+    'KnowledgeAgent',
+    'EmotionAgent'
 ]
 

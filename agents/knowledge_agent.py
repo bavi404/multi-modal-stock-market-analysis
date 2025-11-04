@@ -146,6 +146,31 @@ class KnowledgeAgent:
         except Exception as e:
             self.logger.error(f"Error extracting entities: {e}")
             return []
+
+    def _extract_events(self, text: str) -> List[Dict[str, str]]:
+        """Simple keyword-based event extraction from text"""
+        if not text:
+            return []
+        events: List[Dict[str, str]] = []
+        try:
+            lower = text.lower()
+            keyword_map = {
+                'earnings': ['earnings', 'q1', 'q2', 'q3', 'q4', 'quarterly results'],
+                'product_launch': ['launch', 'unveil', 'release'],
+                'acquisition': ['acquires', 'acquisition', 'buy', 'merger', 'merges'],
+                'guidance': ['guidance', 'forecast', 'outlook'],
+                'regulatory': ['sec', 'lawsuit', 'regulator', 'regulatory', 'fine']
+            }
+            found = set()
+            for label, keys in keyword_map.items():
+                if any(k in lower for k in keys):
+                    found.add(label)
+            for ev in found:
+                events.append({'text': ev.replace('_', ' ').title(), 'label': 'EVENT'})
+            return events
+        except Exception as e:
+            self.logger.error(f"Error extracting events: {e}")
+            return []
     
     def _create_cypher_queries(self, entities: List[Dict[str, str]], 
                              article_title: str) -> List[str]:
@@ -294,11 +319,20 @@ class KnowledgeAgent:
                 
                 # Extract entities from article
                 entities = self._extract_entities(article_content)
+                events = self._extract_events(article_content)
                 all_entities.extend(entities)
                 
                 # Update Neo4j if available
-                if self.neo4j_driver and entities:
+                if self.neo4j_driver and (entities or events):
                     queries = self._create_cypher_queries(entities, article_title)
+                    # Ensure Event nodes
+                    for event in events:
+                        event_node_query = """
+                        MERGE (e:Event {name: $event_name})
+                        SET e.type = 'event'
+                        RETURN e
+                        """
+                        queries.append(event_node_query)
                     
                     with self.neo4j_driver.session() as session:
                         for query in queries:
@@ -319,8 +353,31 @@ class KnowledgeAgent:
                                             'entity_type': entity['label'],
                                             'relationship': 'MENTIONS'
                                         })
+                                elif 'event_name' in query and events:
+                                    for event in events:
+                                        session.run(query, event_name=event['text'])
                             except Exception as query_error:
                                 self.logger.error(f"Error executing query: {query_error}")
+                        # Create impacted_by relationships between Company and Event
+                        if entities and events:
+                            for entity in entities:
+                                if entity['label'] == 'ORG':
+                                    for event in events:
+                                        try:
+                                            session.run(
+                                                """
+                                                MATCH (c:Company {name: $company}), (e:Event {name: $event})
+                                                MERGE (c)-[:IMPACTED_BY]->(e)
+                                                """,
+                                                company=entity['text'], event=event['text']
+                                            )
+                                            all_relationships.append({
+                                                'company': entity['text'],
+                                                'event': event['text'],
+                                                'relationship': 'IMPACTED_BY'
+                                            })
+                                        except Exception as rel_err:
+                                            self.logger.error(f"Error creating IMPACTED_BY: {rel_err}")
                 
             except Exception as e:
                 self.logger.error(f"Error processing article {i}: {e}")

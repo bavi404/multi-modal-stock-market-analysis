@@ -37,6 +37,7 @@ def simple_analysis_example():
         print("\nKey Results:")
         print(f"  • Sentiment Score: {report.sentiment_analysis.sentiment_score:.3f}")
         print(f"  • Dominant Emotion: {report.sentiment_analysis.dominant_emotion}")
+        print(f"  • Market Emotion Signal: {report.emotion_analysis.dominant_emotion} ({report.emotion_analysis.confidence:.2f} conf)")
         print(f"  • Predicted Price: ${report.price_prediction.predicted_price:.2f}")
         print(f"  • Articles Analyzed: {len(report.knowledge_insights.recommended_articles)}")
         print(f"  • Entities Extracted: {len(report.knowledge_insights.entities_extracted)}")

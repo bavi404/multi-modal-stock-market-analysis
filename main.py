@@ -80,6 +80,18 @@ def format_analysis_report(report) -> str:
         output += f"• Dominant Emotion: {report.sentiment_analysis.dominant_emotion.title()}\n"
         output += f"• Analysis Confidence: {report.sentiment_analysis.confidence:.1%}\n"
         output += f"• Summary: {report.sentiment_analysis.summary}\n\n"
+
+        # Emotion Analysis Details
+        output += "EMOTION SIGNALS\n"
+        output += "-" * 50 + "\n"
+        output += f"• Dominant Market Emotion: {report.emotion_analysis.dominant_emotion.title()}\n"
+        output += f"• Emotion Confidence: {report.emotion_analysis.confidence:.1%}\n"
+        if report.emotion_analysis.emotion_scores:
+            # Show top 3 emotions
+            top_emotions = sorted(report.emotion_analysis.emotion_scores.items(), key=lambda x: x[1], reverse=True)[:3]
+            top_str = ", ".join([f"{k.title()}: {v:.2f}" for k, v in top_emotions])
+            output += f"• Top Signals: {top_str}\n"
+        output += f"• Summary: {report.emotion_analysis.summary}\n\n"
         
         # Price Prediction Details
         output += "PRICE PREDICTION\n"

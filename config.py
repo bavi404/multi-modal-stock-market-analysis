@@ -23,6 +23,7 @@ NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD')
 SENTIMENT_MODEL = 'ProsusAI/finbert'
 EMBEDDING_MODEL = 'all-MiniLM-L6-v2'
 SPACY_MODEL = 'en_core_web_sm'
+EMOTION_MODEL = os.getenv('EMOTION_MODEL', 'j-hartmann/emotion-english-distilroberta-base')
 
 # Data Configuration
 DEFAULT_PERIOD = '1y'  # Default period for stock data
@@ -33,4 +34,5 @@ MAX_NEWS_ARTICLES = 20
 # Analysis Configuration
 PREDICTION_DAYS = 5  # Number of days to use for price prediction
 TOP_ARTICLES = 5     # Number of top articles to recommend
+USE_LSTM = os.getenv('USE_LSTM', 'false').lower() == 'true'
 

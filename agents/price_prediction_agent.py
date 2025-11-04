@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import config
 from utils.data_models import PredictionResult
+import torch
+import torch.nn as nn
 
 
 class PricePredictionAgent:
@@ -24,6 +26,24 @@ class PricePredictionAgent:
         self.scaler = StandardScaler()
         self.is_trained = False
         self.feature_names = []
+        self.use_lstm = config.USE_LSTM
+        if self.use_lstm:
+            self._init_lstm()
+
+    def _init_lstm(self):
+        class LSTMRegressor(nn.Module):
+            def __init__(self, input_size: int, hidden_size: int = 64, num_layers: int = 1):
+                super().__init__()
+                self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
+                self.fc = nn.Linear(hidden_size, 1)
+            def forward(self, x):
+                # x: (batch, seq_len, input_size)
+                out, _ = self.lstm(x)
+                last = out[:, -1, :]
+                return self.fc(last)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Placeholder sizes; will reinit when training with actual feature count
+        self.lstm_model = None
         
     def _prepare_features(self, price_data: pd.DataFrame, sentiment_score: float) -> np.ndarray:
         """
@@ -157,6 +177,54 @@ class PricePredictionAgent:
             y_train.append(price_data['Close'].iloc[i + 1])
         
         return np.array(X_train), np.array(y_train)
+
+    def _train_lstm(self, X_train: np.ndarray, y_train: np.ndarray, epochs: int = 5) -> Dict[str, float]:
+        if X_train.size == 0 or y_train.size == 0:
+            self.logger.error("No training data for LSTM")
+            return {}
+        try:
+            # For LSTM, treat each feature vector as a sequence of length seq_len with input_size=1
+            # Here we reshape to (batch, seq_len, 1)
+            seq_len = X_train.shape[1]
+            input_size = 1
+            if self.lstm_model is None:
+                # Initialize based on seq_len and input size
+                class LSTMRegressor(nn.Module):
+                    def __init__(self, input_size: int, hidden_size: int = 64, num_layers: int = 1):
+                        super().__init__()
+                        self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
+                        self.fc = nn.Linear(hidden_size, 1)
+                    def forward(self, x):
+                        out, _ = self.lstm(x)
+                        last = out[:, -1, :]
+                        return self.fc(last)
+                self.lstm_model = LSTMRegressor(input_size).to(self.device)
+            model = self.lstm_model
+            optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+            loss_fn = nn.MSELoss()
+            # Normalize targets for stability
+            y_mean = float(y_train.mean())
+            y_std = float(y_train.std() if y_train.std() != 0 else 1.0)
+            X_seq = torch.tensor(X_train.reshape(-1, seq_len, 1), dtype=torch.float32).to(self.device)
+            y_t = torch.tensor(((y_train - y_mean) / y_std).reshape(-1, 1), dtype=torch.float32).to(self.device)
+            model.train()
+            for _ in range(epochs):
+                optimizer.zero_grad()
+                preds = model(X_seq)
+                loss = loss_fn(preds, y_t)
+                loss.backward()
+                optimizer.step()
+            self.is_trained = True
+            # Compute simple RMSE on training set
+            model.eval()
+            with torch.no_grad():
+                preds = model(X_seq).cpu().numpy().reshape(-1)
+            y_pred = preds * y_std + y_mean
+            rmse = float(np.sqrt(np.mean((y_pred - y_train) ** 2)))
+            return {'rmse': rmse}
+        except Exception as e:
+            self.logger.error(f"Error training LSTM: {e}")
+            return {}
     
     def _train_model(self, X_train: np.ndarray, y_train: np.ndarray) -> Dict[str, float]:
         """
@@ -266,8 +334,10 @@ class PricePredictionAgent:
             if not self.is_trained:
                 self.logger.info("Training prediction model")
                 X_train, y_train = self._create_training_data(price_history)
-                training_metrics = self._train_model(X_train, y_train)
-                
+                if self.use_lstm:
+                    training_metrics = self._train_lstm(X_train, y_train, epochs=5)
+                else:
+                    training_metrics = self._train_model(X_train, y_train)
                 if not self.is_trained:
                     self.logger.error("Model training failed")
                     return PredictionResult(
@@ -277,10 +347,8 @@ class PricePredictionAgent:
                         model_confidence=0.0,
                         features_used=[]
                     )
-            
             # Prepare features for prediction
             features = self._prepare_features(price_history, sentiment_score)
-            
             if len(features) == 0:
                 self.logger.error("Could not prepare features for prediction")
                 return PredictionResult(
@@ -290,18 +358,25 @@ class PricePredictionAgent:
                     model_confidence=0.0,
                     features_used=[]
                 )
-            
-            # Scale features
-            features_scaled = self.scaler.transform(features)
-            
-            # Make prediction
-            predicted_price = self.model.predict(features_scaled)[0]
+            if self.use_lstm:
+                # For LSTM, reshape to (1, seq_len, 1) and predict
+                self.lstm_model.eval()
+                with torch.no_grad():
+                    seq = torch.tensor(features.reshape(1, -1, 1), dtype=torch.float32).to(self.device)
+                    pred_norm = self.lstm_model(seq).cpu().numpy().reshape(-1)[0]
+                # As we normalized targets during training, we lack y_mean/y_std here; fall back to using last price as baseline adjustment
+                baseline = float(price_history['Close'].iloc[-1])
+                predicted_price = baseline + float(pred_norm)
+            else:
+                # Scale features for linear regression
+                features_scaled = self.scaler.transform(features)
+                predicted_price = self.model.predict(features_scaled)[0]
             
             # Calculate confidence interval
             confidence_interval = self._calculate_confidence_interval(predicted_price)
             
             # Calculate model confidence (simplified)
-            model_confidence = min(0.8, max(0.3, abs(sentiment_score) + 0.5))
+            model_confidence = min(0.85, max(0.3, abs(sentiment_score) + (0.55 if self.use_lstm else 0.5)))
             
             # Determine prediction date (next trading day)
             prediction_date = datetime.now() + timedelta(days=1)

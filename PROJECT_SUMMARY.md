@@ -21,8 +21,10 @@ stock-analysis-agent/
 │   ├── orchestrator_agent.py  # Master coordinator agent
 │   ├── data_gathering_agent.py # Multi-source data collection
 │   ├── sentiment_agent.py     # FinBERT sentiment analysis
-│   ├── price_prediction_agent.py # ML-based price forecasting
-│   └── knowledge_agent.py     # NER and knowledge graphs
+│   ├── emotion_agent.py       # Market emotion detection
+│   ├── price_prediction_agent.py # ML/LSTM-based price forecasting
+│   └── knowledge_agent.py     # NER, events, knowledge graphs
+├── ui_app.py                  # Streamlit UI
 └── utils/
     ├── __init__.py
     └── data_models.py         # Pydantic data models
@@ -49,19 +51,25 @@ stock-analysis-agent/
 - **Batch Processing**: Efficient analysis of large text datasets
 - **Confidence Scoring**: Weighted sentiment aggregation
 
-### 4. **PricePredictionAgent** (ML-Based Forecasting)
+### 4. **PricePredictionAgent** (ML/LSTM-Based Forecasting)
 - **Multi-Modal Features**: Price history + sentiment scores
 - **Technical Indicators**: SMA, volatility, volume ratios
-- **Linear Regression**: With sentiment integration
+- **Linear Regression (default) / LSTM (optional)**
 - **Confidence Intervals**: Statistical prediction bounds
 - **Feature Importance**: Explainable AI components
 
-### 5. **KnowledgeAgent** (Knowledge Graphs & Recommendations)
+### 5. **EmotionAgent** (Market Emotions)
+- **Emotion Model**: Transformer-based, aggregated across texts
+- **Signals**: Fear, Greed, Confidence, Uncertainty
+
+### 6. **KnowledgeAgent** (Knowledge Graphs & Recommendations)
 - **Sentence Transformers**: Semantic article similarity
 - **spaCy NER**: Named entity recognition
 - **Neo4j Integration**: Graph database for relationships
 - **Article Recommendations**: Top-K similar articles
 - **Entity Relationships**: Company-Person-Product mappings
+- **Event Extraction**: Earnings, product launch, M&A, guidance, regulatory
+- **Company → IMPACTED_BY → Event**
 
 ## 🛠️ Technical Implementation
 
@@ -88,7 +96,7 @@ stock-analysis-agent/
 3. **Sentiment Analysis**: Multi-text sentiment aggregation
 4. **Feature Engineering**: Technical indicators + sentiment features
 5. **Price Prediction**: ML-based forecasting with confidence intervals
-6. **Knowledge Extraction**: Entity recognition and graph creation
+6. **Knowledge Extraction**: Entity + event extraction and graph creation
 7. **Report Generation**: Structured output with executive summary
 
 ## 🎯 Usage Examples
@@ -144,7 +152,7 @@ print(report.executive_summary)
 ### Model Configuration
 - Sentiment model selection (FinBERT/DistilBERT)
 - Embedding model for article similarity
-- Prediction model parameters
+- Prediction model parameters (toggle LSTM via `USE_LSTM=true`)
 - Analysis timeframes and limits
 
 ## 🚀 Deployment Ready

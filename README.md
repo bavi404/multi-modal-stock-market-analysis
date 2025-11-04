@@ -13,13 +13,14 @@ An advanced, agentic AI-driven system for comprehensive stock market analysis th
 
 ## 🏗️ Architecture
 
-The system consists of five specialized agents:
+The system consists of six specialized agents:
 
 1. **OrchestratorAgent**: Master coordinator managing the entire workflow
 2. **DataGatheringAgent**: Collects data from yfinance, Twitter, Reddit, and News APIs
 3. **SentimentAgent**: Performs sentiment analysis using FinBERT and other models
-4. **PricePredictionAgent**: ML-based price forecasting with multi-modal features
-5. **KnowledgeAgent**: Article recommendations and knowledge graph creation
+4. **EmotionAgent**: Detects market emotions (fear, greed, confidence, uncertainty)
+5. **PricePredictionAgent**: ML-based price forecasting with multi-modal features (Linear Regression or optional LSTM)
+6. **KnowledgeAgent**: Article recommendations and knowledge graph creation
 
 ## 📋 Prerequisites
 
@@ -47,9 +48,13 @@ cp .env.example .env
 # Edit .env with your API keys
 ```
 
-4. **Run Analysis**
+4. **Run Analysis (CLI)**
 ```bash
 python main.py --ticker TSLA
+5. **Run the UI (Streamlit)**
+```bash
+streamlit run ui_app.py
+```
 ```
 
 ## 🔧 Installation
@@ -100,7 +105,7 @@ NEO4J_PASSWORD=your_neo4j_password_here
 
 ## 🎯 Usage
 
-### Basic Analysis
+### Basic Analysis (CLI)
 ```bash
 python main.py --ticker AAPL
 ```
@@ -116,6 +121,11 @@ python main.py --ticker GOOGL --save-json analysis_report.json
 ```
 
 ### Check System Status
+### Web UI
+```bash
+streamlit run ui_app.py
+```
+Then open the local URL shown by Streamlit.
 ```bash
 python main.py --status
 ```
@@ -135,8 +145,11 @@ The system provides:
 
 1. **Executive Summary**: High-level analysis overview
 2. **Sentiment Analysis**: Social media and news sentiment scores
+   - Emotion signals: fear/greed/confidence/uncertainty with confidence
 3. **Price Prediction**: ML-based next-day price forecast
+   - Models: Linear Regression (default) or LSTM (enable via `USE_LSTM=true` in `.env`)
 4. **Knowledge Insights**: Key entities and article recommendations
+   - Event extraction (earnings, launch, M&A, guidance, regulatory) and Company → IMPACTED_BY → Event
 5. **Detailed Metrics**: Confidence intervals, feature importance, etc.
 
 ## 🛠️ Development
@@ -155,6 +168,7 @@ stock-analysis-agent/
 │   └── knowledge_agent.py
 └── utils/
     └── data_models.py     # Pydantic data models
+├── ui_app.py              # Streamlit UI
 ```
 
 ### Extending the Framework
@@ -163,7 +177,7 @@ To add new agents or modify existing ones:
 
 1. **New Agent**: Create in `agents/` directory, inherit from base patterns
 2. **New Data Source**: Extend `DataGatheringAgent` with new API integration
-3. **New ML Model**: Modify `PricePredictionAgent` or `SentimentAgent`
+3. **New ML Model**: Modify `PricePredictionAgent` (toggle `USE_LSTM`) or `SentimentAgent`
 4. **New Features**: Add to `config.py` and update relevant agents
 
 ## 🔍 Troubleshooting
@@ -212,7 +226,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## 🔮 Future Enhancements
 
-- [ ] Web interface (Streamlit/Flask)
+- [x] Web interface (Streamlit)
 - [ ] Real-time streaming analysis
 - [ ] Portfolio-level analysis
 - [ ] Advanced ML models (LSTM, Transformer-based forecasting)

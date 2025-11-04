@@ -10,6 +10,7 @@ from .data_gathering_agent import DataGatheringAgent
 from .sentiment_agent import SentimentAgent
 from .price_prediction_agent import PricePredictionAgent
 from .knowledge_agent import KnowledgeAgent
+from .emotion_agent import EmotionAgent
 from utils.data_models import AnalysisReport, StockData
 
 
@@ -27,6 +28,7 @@ class OrchestratorAgent:
         self.sentiment_agent = SentimentAgent()
         self.prediction_agent = PricePredictionAgent()
         self.knowledge_agent = KnowledgeAgent()
+        self.emotion_agent = EmotionAgent()
         
         self.logger.info("All agents initialized successfully")
     
@@ -110,7 +112,7 @@ class OrchestratorAgent:
         return all_texts
     
     def _generate_executive_summary(self, ticker: str, stock_data: StockData,
-                                   sentiment_result, prediction_result, 
+                                   sentiment_result, emotion_result, prediction_result, 
                                    knowledge_result) -> str:
         """
         Generate an executive summary of the analysis
@@ -162,6 +164,8 @@ class OrchestratorAgent:
             # Get knowledge info
             num_articles = len(knowledge_result.recommended_articles)
             num_entities = len(knowledge_result.entities_extracted)
+            # Emotions
+            dominant_market_emotion = emotion_result.dominant_emotion
             
             summary = f"""
 EXECUTIVE SUMMARY - {ticker} Analysis
@@ -169,11 +173,12 @@ EXECUTIVE SUMMARY - {ticker} Analysis
 Current Status:
 • Current Price: {price_str}
 • Market Sentiment: {sentiment_desc.title()} (score: {sentiment_score:.2f})
+• Emotion Signal: {dominant_market_emotion.title()} (confidence: {emotion_result.confidence:.2f})
 • Predicted Next-Day Price: ${predicted_price:.2f} ({direction} of {abs(price_change_pct):.1f}%)
 
 Key Insights:
 • Analyzed {len(stock_data.tweets)} tweets, {len(stock_data.reddit_posts)} Reddit posts, and {len(stock_data.news_articles)} news articles
-• Overall market sentiment is {sentiment_desc} with dominant emotion: {sentiment_result.dominant_emotion}
+• Overall market sentiment is {sentiment_desc} with text-level emotion lean: {sentiment_result.dominant_emotion}; market emotion signal: {dominant_market_emotion}
 • Price prediction model suggests a {direction} to ${predicted_price:.2f} (confidence: {prediction_result.model_confidence:.1f})
 • Knowledge analysis processed {num_articles} relevant articles and identified {num_entities} key entities
 
@@ -228,6 +233,10 @@ Analysis completed on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             )
             
             sentiment_result = self.sentiment_agent.analyze(all_text_data)
+
+            # Step 2.5: Emotion Analysis
+            self.logger.info("Step 2.5: Detecting emotions...")
+            emotion_result = self.emotion_agent.analyze(all_text_data)
             
             # Step 3: Price Prediction
             self.logger.info("Step 3: Predicting price...")
@@ -254,7 +263,7 @@ Analysis completed on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             # Step 5: Generate Executive Summary
             self.logger.info("Step 5: Generating executive summary...")
             executive_summary = self._generate_executive_summary(
-                ticker, stock_data, sentiment_result, prediction_result, knowledge_result
+                ticker, stock_data, sentiment_result, emotion_result, prediction_result, knowledge_result
             )
             
             # Create final report
@@ -263,6 +272,7 @@ Analysis completed on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 analysis_date=analysis_start_time,
                 stock_data=stock_data,
                 sentiment_analysis=sentiment_result,
+                emotion_analysis=emotion_result,
                 price_prediction=prediction_result,
                 knowledge_insights=knowledge_result,
                 executive_summary=executive_summary
@@ -311,11 +321,18 @@ Analysis completed on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 graph_summary=f"Error occurred during knowledge analysis: {str(e)}"
             )
             
+            from utils.data_models import EmotionResult
             return AnalysisReport(
                 ticker=ticker,
                 analysis_date=analysis_start_time,
                 stock_data=error_stock_data,
                 sentiment_analysis=error_sentiment,
+                emotion_analysis=EmotionResult(
+                    dominant_emotion="neutral",
+                    emotion_scores={},
+                    confidence=0.0,
+                    summary="Emotion analysis skipped due to error"
+                ),
                 price_prediction=error_prediction,
                 knowledge_insights=error_knowledge,
                 executive_summary=f"Analysis failed for {ticker}: {str(e)}"
@@ -333,6 +350,7 @@ Analysis completed on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             'sentiment_agent': 'Ready' if self.sentiment_agent.sentiment_pipeline else 'Model not loaded',
             'prediction_agent': 'Ready',
             'knowledge_agent': 'Ready' if self.knowledge_agent.embedding_model else 'Model not loaded',
+            'emotion_agent': 'Ready' if self.emotion_agent.emotion_pipeline else 'Model not loaded',
             'neo4j_connection': 'Connected' if self.knowledge_agent.neo4j_driver else 'Not connected'
         }
     

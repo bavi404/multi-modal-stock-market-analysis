@@ -99,6 +99,25 @@ def test_sentiment_analysis():
         print(f"❌ Sentiment analysis test failed: {e}")
         print("This might be due to model download issues or memory constraints")
 
+def test_emotion_analysis():
+    """Test emotion analysis with sample data"""
+    print("\n🎭 Testing emotion analysis...")
+    try:
+        from agents.emotion_agent import EmotionAgent
+        agent = EmotionAgent()
+        sample_texts = [
+            "Strong iPhone demand boosts Apple's outlook; investors cheer",
+            "Regulatory probe raises uncertainty for the sector",
+            "Mixed signals keep market participants cautious"
+        ]
+        print("Analyzing sample texts for emotions...")
+        result = agent.analyze(sample_texts)
+        print(f"✅ Emotion analysis completed")
+        print(f"   Dominant market emotion: {result.dominant_emotion}")
+        print(f"   Confidence: {result.confidence:.3f}")
+    except Exception as e:
+        print(f"❌ Emotion analysis test failed: {e}")
+
 def test_price_prediction():
     """Test price prediction with sample data"""
     print("\n📈 Testing price prediction...")
@@ -198,6 +217,7 @@ def test_full_orchestrator():
         print(f"   Ticker: {report.ticker}")
         print(f"   Sentiment score: {report.sentiment_analysis.sentiment_score:.3f}")
         print(f"   Predicted price: ${report.price_prediction.predicted_price:.2f}")
+        print(f"   Market emotion: {report.emotion_analysis.dominant_emotion}")
         print(f"   Articles analyzed: {len(report.knowledge_insights.recommended_articles)}")
         
         orchestrator.close()
@@ -216,6 +236,7 @@ def main():
     test_imports()
     test_data_gathering()
     test_sentiment_analysis()
+    test_emotion_analysis()
     test_price_prediction()
     test_knowledge_agent()
     test_full_orchestrator()

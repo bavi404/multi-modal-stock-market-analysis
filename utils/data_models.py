@@ -45,12 +45,21 @@ class KnowledgeResult(BaseModel):
     graph_summary: str
 
 
+class EmotionResult(BaseModel):
+    """Model for emotion analysis results"""
+    dominant_emotion: str
+    emotion_scores: Dict[str, float]
+    confidence: float
+    summary: str
+
+
 class AnalysisReport(BaseModel):
     """Complete analysis report model"""
     ticker: str
     analysis_date: datetime
     stock_data: StockData
     sentiment_analysis: SentimentResult
+    emotion_analysis: EmotionResult
     price_prediction: PredictionResult
     knowledge_insights: KnowledgeResult
     executive_summary: str
