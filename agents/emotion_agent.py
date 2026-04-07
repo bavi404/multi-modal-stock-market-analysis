@@ -2,11 +2,12 @@
 Emotion Analysis Agent for detecting market emotions from text
 """
 from transformers import pipeline
+import asyncio
 import numpy as np
-from typing import List, Dict
+from typing import List, Dict, Any
 import logging
-import config
-from utils.data_models import EmotionResult
+from utils import config
+from models.data_models import EmotionResult
 
 
 class EmotionAgent:
@@ -70,16 +71,36 @@ class EmotionAgent:
             'neutral': neutral
         }
         return max(market_map.items(), key=lambda x: x[1])[0]
-    
+
+    @staticmethod
+    def _scores_list_from_pipeline(raw: Any) -> List[Dict[str, Any]]:
+        """HF text-classification may return [[{label, score}, ...]] or [{...}, ...]."""
+        if not raw:
+            return []
+        first = raw[0]
+        if isinstance(first, dict):
+            return list(raw)
+        if isinstance(first, list):
+            return list(first)
+        return []
+
     def analyze(self, texts: List[str]) -> EmotionResult:
         """Analyze market emotions across a list of texts"""
         self.logger.info(f"Starting emotion analysis on {len(texts)} texts")
         if not texts or not self.emotion_pipeline:
+            label = getattr(config, "FALLBACK_EMOTION_LABEL", "neutral")
+            self.logger.warning(
+                "EmotionAgent: no texts or pipeline unavailable — using fallback emotion '%s'",
+                label,
+            )
             return EmotionResult(
-                dominant_emotion="neutral",
+                dominant_emotion=label,
                 emotion_scores={},
                 confidence=0.0,
-                summary="No texts provided or model unavailable for emotion analysis."
+                summary=(
+                    "No texts provided or model unavailable; "
+                    f"using fallback emotion label '{label}'."
+                ),
             )
         per_text_scores = []
         confidences = []
@@ -88,11 +109,13 @@ class EmotionAgent:
                 cleaned = self._preprocess_text(text)
                 if not cleaned:
                     continue
-                result = self.emotion_pipeline(cleaned, top_k=None)[0]
-                # Convert to dict
+                raw = self.emotion_pipeline(cleaned, top_k=None)
+                result = self._scores_list_from_pipeline(raw)
+                if not result:
+                    continue
                 score_dict = {item['label'].lower(): float(item['score']) for item in result}
                 per_text_scores.append(score_dict)
-                confidences.append(max(item['score'] for item in result))
+                confidences.append(max(float(item['score']) for item in result))
             except Exception as e:
                 self.logger.error(f"Error analyzing emotion for text {i}: {e}")
                 continue
@@ -107,5 +130,9 @@ class EmotionAgent:
             confidence=overall_conf,
             summary=summary
         )
+
+    async def analyze_async(self, texts: List[str]) -> EmotionResult:
+        """Async wrapper for orchestration pipelines."""
+        return await asyncio.to_thread(self.analyze, texts)
 
 

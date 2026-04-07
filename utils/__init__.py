@@ -1,14 +1,6 @@
-"""
-Utilities package for the Multi-Modal Stock Market Analysis Framework
-"""
+"""Utilities: configuration, caching, HTTP health, and shared logging."""
 
-from .data_models import *
+from . import config
+from .logging import configure_root_logging, get_logger, setup_logging
 
-__all__ = [
-    'StockData',
-    'SentimentResult', 
-    'PredictionResult',
-    'KnowledgeResult',
-    'AnalysisReport'
-]
-
+__all__ = ["config", "configure_root_logging", "get_logger", "setup_logging"]

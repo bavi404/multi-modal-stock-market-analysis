@@ -252,8 +252,6 @@ def main():
 if __name__ == "__main__":
     main()
 
-### **Step 1: Environment Setup**
-
 #### Option A: Using pip (Recommended)
 ```bash
 # Install Python dependencies

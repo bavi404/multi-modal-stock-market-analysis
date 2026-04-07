@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Market Signals · Robo-Advisor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="site-header">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M3 3v18h18" />
+            <path d="M7 14l4-4 4 4 6-6" />
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>Market Signals</h1>
+          <p>Live multi-modal context · Gemini robo-advisor</p>
+        </div>
+      </div>
+      <div class="status-chips" role="status">
+        <span class="chip" id="chipLive">
+          <span class="chip-dot" aria-hidden="true"></span>
+          <span class="chip-text">Live: …</span>
+        </span>
+        <span class="chip chat" id="chipChat">
+          <span class="chip-dot" aria-hidden="true"></span>
+          <span class="chip-text">Chat: …</span>
+        </span>
+      </div>
+    </header>
+
+    <main class="dashboard-grid">
+      <section class="panel" aria-labelledby="live-heading">
+        <div class="panel-header">
+          <div>
+            <h2 id="live-heading">Live market panel</h2>
+            <p class="sub">
+              Prices, sentiment, and source counts update on the server stream. Subscribe to extra tickers without restarting the app.
+            </p>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="watch-row">
+            <input
+              type="text"
+              id="watchTicker"
+              placeholder="Add ticker (e.g. GOOGL)"
+              maxlength="12"
+              autocomplete="off"
+            />
+            <button type="button" class="btn btn-ghost" id="watchBtn">Watch symbol</button>
+          </div>
+          <div id="livePanel"></div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="chat-heading">
+        <div class="panel-header">
+          <div>
+            <h2 id="chat-heading">Robo-advisor</h2>
+            <p class="sub">
+              Ask about risk, catalysts, or how signals fit together. Answers stream from Gemini using your latest pipeline context for the selected symbol.
+            </p>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="chat-controls">
+            <div class="ticker-wrap">
+              <label for="ticker">Symbol</label>
+              <select id="ticker" aria-label="Ticker for advisor context">
+                <option>AAPL</option>
+                <option>MSFT</option>
+                <option>NVDA</option>
+                <option>TSLA</option>
+                <option>GOOGL</option>
+                <option>AMZN</option>
+                <option>META</option>
+              </select>
+            </div>
+          </div>
+          <div id="chatBox" class="chat-scroll" role="log" aria-live="polite" aria-relevant="additions"></div>
+          <div class="chat-input-row">
+            <input
+              type="text"
+              id="message"
+              placeholder="Ask the advisor…"
+              autocomplete="off"
+              maxlength="4000"
+            />
+            <button type="button" class="btn btn-primary" id="sendBtn">Send</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      Educational use only. Not investment advice. Model outputs and third-party data may be incomplete or delayed.
+      <a href="/health">System health</a>
+    </footer>
+  </div>
+
+  <script defer src="/static/app.js"></script>
+</body>
+</html>

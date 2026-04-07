@@ -2,14 +2,15 @@
 Knowledge Agent for article recommendation and knowledge graph creation
 """
 import spacy
+import asyncio
 from sentence_transformers import SentenceTransformer
 from neo4j import GraphDatabase
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 import logging
-import config
-from utils.data_models import KnowledgeResult
+from utils import config
+from models.data_models import KnowledgeResult
 
 
 class KnowledgeAgent:
@@ -101,7 +102,7 @@ class KnowledgeAgent:
             self.logger.error(f"Error generating embedding: {e}")
             return np.array([])
     
-    def _extract_entities(self, text: str) -> List[Dict[str, str]]:
+    def _extract_entities(self, text: str) -> List[Dict[str, Any]]:
         """
         Extract named entities from text using spaCy
         
@@ -172,7 +173,7 @@ class KnowledgeAgent:
             self.logger.error(f"Error extracting events: {e}")
             return []
     
-    def _create_cypher_queries(self, entities: List[Dict[str, str]], 
+    def _create_cypher_queries(self, entities: List[Dict[str, Any]],
                              article_title: str) -> List[str]:
         """
         Generate Cypher queries to create nodes and relationships
@@ -337,25 +338,39 @@ class KnowledgeAgent:
                     with self.neo4j_driver.session() as session:
                         for query in queries:
                             try:
-                                if 'article_title' in query:
-                                    session.run(query, article_title=article_title)
-                                elif 'entity_name' in query and entities:
+                                # Relationship queries include both params; must not use article-only branch.
+                                if (
+                                    "entity_name" in query
+                                    and "article_title" in query
+                                    and "MENTIONS" in query
+                                    and entities
+                                ):
                                     for entity in entities:
-                                        session.run(query, 
-                                                  entity_name=entity['text'],
-                                                  entity_type=entity['label'],
-                                                  article_title=article_title)
-                                        
-                                        # Track relationships
-                                        all_relationships.append({
-                                            'article': article_title,
-                                            'entity': entity['text'],
-                                            'entity_type': entity['label'],
-                                            'relationship': 'MENTIONS'
-                                        })
-                                elif 'event_name' in query and events:
+                                        session.run(
+                                            query,
+                                            entity_name=entity["text"],
+                                            article_title=article_title,
+                                        )
+                                        all_relationships.append(
+                                            {
+                                                "article": article_title,
+                                                "entity": entity["text"],
+                                                "entity_type": entity["label"],
+                                                "relationship": "MENTIONS",
+                                            }
+                                        )
+                                elif "article_title" in query and "entity_name" not in query:
+                                    session.run(query, article_title=article_title)
+                                elif "entity_name" in query and entities:
+                                    for entity in entities:
+                                        session.run(
+                                            query,
+                                            entity_name=entity["text"],
+                                            entity_type=entity["label"],
+                                        )
+                                elif "event_name" in query and events:
                                     for event in events:
-                                        session.run(query, event_name=event['text'])
+                                        session.run(query, event_name=event["text"])
                             except Exception as query_error:
                                 self.logger.error(f"Error executing query: {query_error}")
                         # Create impacted_by relationships between Company and Event
@@ -482,6 +497,10 @@ class KnowledgeAgent:
         
         self.logger.info("Knowledge analysis completed")
         return result
+
+    async def analyze_async(self, articles: List[Dict[str, str]], ticker: str = "") -> KnowledgeResult:
+        """Async wrapper for orchestration pipelines."""
+        return await asyncio.to_thread(self.analyze, articles, ticker)
     
     def close(self):
         """Close database connections"""

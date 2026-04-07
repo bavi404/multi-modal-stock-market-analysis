@@ -9,9 +9,14 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 from sklearn.model_selection import train_test_split
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional
-import config
-from utils.data_models import PredictionResult
+from typing import Dict, List, Tuple, Optional, Any
+from utils import config
+from models.data_models import PredictionResult
+from utils.prediction_explainability import (
+    build_heuristic_explainability,
+    build_linear_explainability,
+    volatility_proxy,
+)
 import torch
 import torch.nn as nn
 
@@ -306,16 +311,18 @@ class PricePredictionAgent:
             'upper': predicted_price + confidence_range
         }
     
-    def predict(self, price_history: pd.DataFrame, sentiment_score: float) -> PredictionResult:
+    def predict(
+        self,
+        price_history: pd.DataFrame,
+        sentiment_score: float,
+        news_articles: Optional[List[Dict[str, str]]] = None,
+        emotion_dominant: Optional[str] = None,
+        emotion_scores: Optional[Dict[str, float]] = None,
+    ) -> PredictionResult:
         """
-        Predict the next day's closing price
-        
-        Args:
-            price_history: Historical price data
-            sentiment_score: Current sentiment score (-1.0 to 1.0)
-            
-        Returns:
-            PredictionResult object with prediction details
+        Predict the next day's closing price.
+
+        Optional news/emotion inputs are used only for explainability (drivers, events).
         """
         self.logger.info("Starting price prediction")
         
@@ -358,6 +365,7 @@ class PricePredictionAgent:
                     model_confidence=0.0,
                     features_used=[]
                 )
+            features_scaled: Any = None
             if self.use_lstm:
                 # For LSTM, reshape to (1, seq_len, 1) and predict
                 self.lstm_model.eval()
@@ -380,13 +388,45 @@ class PricePredictionAgent:
             
             # Determine prediction date (next trading day)
             prediction_date = datetime.now() + timedelta(days=1)
+
+            explainability = None
+            news = news_articles or []
+            emo_dom = emotion_dominant or "neutral"
+            if self.use_lstm:
+                explainability = build_heuristic_explainability(
+                    predicted_price=float(predicted_price),
+                    model_confidence=float(model_confidence),
+                    sentiment_score=sentiment_score,
+                    price_history_volatility=volatility_proxy(price_history["Close"]),
+                    news_articles=news,
+                    emotion_dominant=emo_dom,
+                    emotion_scores=emotion_scores,
+                )
+            elif (
+                self.is_trained
+                and hasattr(self.model, "coef_")
+                and features_scaled is not None
+                and len(self.feature_names) > 0
+            ):
+                explainability = build_linear_explainability(
+                    predicted_price=float(predicted_price),
+                    model_confidence=float(model_confidence),
+                    feature_names=self.feature_names.copy(),
+                    coefficients=self.model.coef_,
+                    scaled_features=features_scaled,
+                    sentiment_score=sentiment_score,
+                    news_articles=news,
+                    emotion_dominant=emo_dom,
+                    emotion_scores=emotion_scores,
+                )
             
             result = PredictionResult(
                 predicted_price=float(predicted_price),
                 confidence_interval=confidence_interval,
                 prediction_date=prediction_date,
                 model_confidence=float(model_confidence),
-                features_used=self.feature_names.copy()
+                features_used=self.feature_names.copy(),
+                explainability=explainability,
             )
             
             self.logger.info(f"Price prediction completed. Predicted price: ${predicted_price:.2f}")

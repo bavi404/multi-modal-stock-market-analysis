@@ -10,54 +10,101 @@ An advanced, agentic AI-driven system for comprehensive stock market analysis th
 - **Knowledge Graphs**: Neo4j-based entity relationship mapping
 - **Real-Time Data**: Live data from multiple sources (Twitter, Reddit, News APIs)
 - **NLP Insights**: Advanced sentiment analysis and entity extraction
+- **Streaming API**: FastAPI + WebSockets for multi-ticker live updates and advisor chat
+- **Evaluation**: Reproducible backtests and pipeline timing (`run_evaluation.py`)
 
-## 🏗️ Architecture
+## Architecture overview
 
-The system consists of six specialized agents:
+The codebase is organized in layers:
 
-1. **OrchestratorAgent**: Master coordinator managing the entire workflow
-2. **DataGatheringAgent**: Collects data from yfinance, Twitter, Reddit, and News APIs
-3. **SentimentAgent**: Performs sentiment analysis using FinBERT and other models
-4. **EmotionAgent**: Detects market emotions (fear, greed, confidence, uncertainty)
-5. **PricePredictionAgent**: ML-based price forecasting with multi-modal features (Linear Regression or optional LSTM)
-6. **KnowledgeAgent**: Article recommendations and knowledge graph creation
+| Layer | Role |
+|--------|------|
+| **CLI / UI** | `main.py` (batch analysis), `ui_app.py` (Streamlit), `run_evaluation.py` (metrics) |
+| **Orchestration** | `agents/orchestrator_agent.py` sequences data → NLP → prediction → knowledge graph |
+| **Agents** | `data_agent`, `sentiment_agent`, `emotion_agent`, `prediction_agent`, `knowledge_agent`, `advisor_agent` |
+| **Domain models** | `models/data_models.py` (Pydantic `AnalysisReport`, signals, live payloads) |
+| **HTTP / realtime** | `backend/server.py` (FastAPI), `services/streaming_service.py` (WebSockets, Gemini streaming) |
+| **Infrastructure** | `utils/config.py` (env), `utils/response_cache.py` (Redis or memory TTL), `utils/logging.py` |
 
-## 📋 Prerequisites
+**Agent responsibilities (summary)**
+
+1. **OrchestratorAgent** — Coordinates the full pipeline and exposes async + sync entry points.
+2. **DataAgent** — Pulls prices (yfinance) and optional social/news text when API keys are set.
+3. **SentimentAgent** / **EmotionAgent** — Text classification (e.g. FinBERT / emotion transformers).
+4. **PredictionAgent** — Price forecast (linear or optional LSTM) using price + sentiment features.
+5. **KnowledgeAgent** — Embeddings, article ranking, optional Neo4j graph writes.
+6. **AdvisorAgent** — Optional Gemini-backed explanations and chat over the latest signals.
+
+## System design
+
+- **Data flow**: Ticker → gather OHLCV + text → parallel sentiment + emotion → prediction with multimodal features → knowledge enrichment → `AnalysisReport` (or lighter `LiveUpdateResult` for streaming).
+- **Async vs sync**: Long-running work uses `asyncio` and `asyncio.to_thread` for blocking ML/I/O so the API server stays responsive. WebSocket live streaming runs **one asyncio task per ticker** with a semaphore (`LIVE_STREAM_MAX_CONCURRENT`) to cap concurrent pipelines.
+- **Observability**: Shared log format (`%(asctime)s | LEVEL | logger | message`) via `utils.logging`. CLI writes also to `stock_analysis_YYYYMMDD.log`.
+- **Degradation**: Missing API keys or services result in skipped sources and partial reports rather than hard failures where possible.
+
+## How to run
+
+### Prerequisites
 
 - Python 3.8 or higher
 - Neo4j database (optional, for knowledge graph features)
 - API keys for data sources (see Configuration section)
 
-## ⚡ Quick Start
+### Quick start
 
-1. **Clone and Setup**
+1. **Clone and install**
+
 ```bash
-git clone <your-repo>
-cd stock-analysis-agent
+git clone <your-repo-url>
+cd multi-modal-stock-market-analysis
 pip install -r requirements.txt
 ```
 
-2. **Install spaCy Model**
+2. **spaCy model (required for some NLP paths)**
+
 ```bash
 python -m spacy download en_core_web_sm
 ```
 
-3. **Configure API Keys**
+3. **Environment**
+
+Copy or create a `.env` file in the project root (see `API_KEYS_SETUP.md` for keys). Example:
+
 ```bash
-cp .env.example .env
-# Edit .env with your API keys
+# copy template if you maintain one
+# cp .env.example .env
 ```
 
-4. **Run Analysis (CLI)**
+4. **Run a full analysis (CLI)**
+
 ```bash
 python main.py --ticker TSLA
-5. **Run the UI (Streamlit)**
+python main.py --status
+python main.py --ticker AAPL --save-json report.json --verbose
+```
+
+5. **Streamlit UI**
+
 ```bash
 streamlit run ui_app.py
 ```
+
+6. **Streaming backend (WebSocket live + chat)**
+
+```bash
+uvicorn backend.server:app --reload --host 0.0.0.0 --port 8000
+```
+
+Open `http://localhost:8000` for the static dashboard; `/health` for JSON health.
+
+7. **Evaluation (metrics + optional plots)**
+
+```bash
+python run_evaluation.py --ticker AAPL --plots
 ```
 
 ## 🔧 Installation
+
 
 ### 1. Python Dependencies
 ```bash
@@ -120,15 +167,16 @@ python main.py --ticker TSLA --verbose
 python main.py --ticker GOOGL --save-json analysis_report.json
 ```
 
-### Check System Status
+### Check system status
+```bash
+python main.py --status
+```
+
 ### Web UI
 ```bash
 streamlit run ui_app.py
 ```
 Then open the local URL shown by Streamlit.
-```bash
-python main.py --status
-```
 
 ### Supported Tickers
 The system works with any valid stock ticker, with enhanced company name mapping for popular stocks:
@@ -154,21 +202,39 @@ The system provides:
 
 ## 🛠️ Development
 
-### Project Structure
+### Project structure
+
 ```
-stock-analysis-agent/
+multi-modal-stock-market-analysis/
 ├── main.py                 # CLI entry point
-├── config.py              # Configuration settings
-├── requirements.txt       # Dependencies
-├── agents/               # Agent implementations
+├── run_evaluation.py       # Metrics + pipeline timing reports
+├── config.py               # Legacy re-export of utils.config
+├── requirements.txt
+├── models/
+│   └── data_models.py      # Pydantic domain models
+├── agents/
 │   ├── orchestrator_agent.py
-│   ├── data_gathering_agent.py
+│   ├── data_agent.py
 │   ├── sentiment_agent.py
+│   ├── emotion_agent.py
+│   ├── prediction_agent.py
 │   ├── price_prediction_agent.py
-│   └── knowledge_agent.py
-└── utils/
-    └── data_models.py     # Pydantic data models
-├── ui_app.py              # Streamlit UI
+│   ├── knowledge_agent.py
+│   └── advisor_agent.py
+├── backend/
+│   └── server.py           # FastAPI app
+├── services/
+│   ├── streaming_service.py
+│   ├── websocket_manager.py
+│   └── ws_messages.py
+├── evaluation/             # Backtest + reporting helpers
+├── utils/
+│   ├── config.py
+│   ├── logging.py
+│   ├── response_cache.py
+│   └── system_health.py
+├── frontend/               # Static assets for the streaming UI
+└── ui_app.py               # Streamlit UI
 ```
 
 ### Extending the Framework
@@ -227,7 +293,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## 🔮 Future Enhancements
 
 - [x] Web interface (Streamlit)
-- [ ] Real-time streaming analysis
+- [x] Real-time streaming analysis (FastAPI + WebSockets)
 - [ ] Portfolio-level analysis
 - [ ] Advanced ML models (LSTM, Transformer-based forecasting)
 - [ ] Multi-language support

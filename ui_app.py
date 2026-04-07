@@ -1,9 +1,20 @@
-import streamlit as st
+"""
+Streamlit dashboard for one-off full analysis runs (synchronous orchestrator).
+
+For real-time multi-ticker streaming, use the FastAPI app in ``backend/server.py``.
+"""
+
+from __future__ import annotations
+
 import logging
+
+import streamlit as st
+
 from agents.orchestrator_agent import OrchestratorAgent
+from utils.logging import configure_root_logging
 
 
-def main():
+def main() -> None:
     st.set_page_config(page_title="Multi-Modal Stock Analysis", layout="wide")
     st.title("Multi-Modal Stock Market Analysis")
     st.caption("Price • Sentiment • Emotions • News • Knowledge Graph")
@@ -18,7 +29,7 @@ def main():
         run_btn = st.button("Run Analysis", type="primary")
 
     if run_btn and ticker:
-        logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO)
+        configure_root_logging(verbose=verbose, level=logging.DEBUG if verbose else logging.INFO)
         st.info(f"Running analysis for {ticker}. This may take a few minutes on first run (model downloads).")
         orchestrator = OrchestratorAgent()
         # Switch LSTM at runtime if requested

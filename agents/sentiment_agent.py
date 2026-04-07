@@ -2,12 +2,13 @@
 Sentiment Analysis Agent for analyzing text sentiment and emotions
 """
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
+import asyncio
 import torch
 import numpy as np
 from typing import List, Dict, Tuple
 import logging
-import config
-from utils.data_models import SentimentResult
+from utils import config
+from models.data_models import SentimentResult
 
 
 class SentimentAgent:
@@ -122,7 +123,7 @@ class SentimentAgent:
             self.logger.error(f"Error analyzing text sentiment: {e}")
             return {'label': 'NEUTRAL', 'score': 0.0, 'confidence': 0.0}
     
-    def _determine_dominant_emotion(self, individual_scores: List[Dict[str, float]]) -> str:
+    def _determine_dominant_emotion(self, individual_scores: List[dict]) -> str:
         """
         Determine the dominant emotion from individual sentiment scores
         
@@ -150,7 +151,7 @@ class SentimentAgent:
         else:
             return "neutral"
     
-    def _calculate_aggregate_sentiment(self, individual_scores: List[Dict[str, float]]) -> float:
+    def _calculate_aggregate_sentiment(self, individual_scores: List[dict]) -> float:
         """
         Calculate aggregate sentiment score from individual analyses
         
@@ -223,12 +224,17 @@ class SentimentAgent:
         self.logger.info(f"Starting sentiment analysis on {len(texts)} texts")
         
         if not texts:
+            fb = float(getattr(config, "FALLBACK_SENTIMENT_SCORE", 0.0))
+            self.logger.warning("SentimentAgent: no texts — using configured neutral fallback (score=%s)", fb)
             return SentimentResult(
-                sentiment_score=0.0,
+                sentiment_score=fb,
                 dominant_emotion="neutral",
                 confidence=0.0,
                 individual_scores=[],
-                summary="No texts provided for analysis."
+                summary=(
+                    f"No texts available (data sources empty or skipped); "
+                    f"using fallback sentiment score {fb:.2f}."
+                ),
             )
         
         # Analyze each text individually
@@ -281,4 +287,8 @@ class SentimentAgent:
             results[source] = self.analyze(texts)
             
         return results
+
+    async def analyze_async(self, texts: List[str]) -> SentimentResult:
+        """Async wrapper for orchestration pipelines."""
+        return await asyncio.to_thread(self.analyze, texts)
 

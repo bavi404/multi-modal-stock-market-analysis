@@ -1,34 +1,72 @@
 """
-Orchestrator Agent - The master agent that coordinates all other agents
-"""
-import logging
-from datetime import datetime
-from typing import Dict, List, Optional
-import pandas as pd
+Orchestrator: wires data, NLP, prediction, knowledge, emotion, and advisor agents.
 
-from .data_gathering_agent import DataGatheringAgent
+Exposes a full async pipeline (:meth:`run_analysis_async`), a synchronous wrapper
+(:meth:`run_analysis`), and lighter paths for live UI and streaming (:meth:`get_live_snapshot_async`).
+"""
+
+from __future__ import annotations
+
+import logging
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime
+import time
+from typing import Dict, List, Optional
+from .data_agent import DataAgent
 from .sentiment_agent import SentimentAgent
-from .price_prediction_agent import PricePredictionAgent
+from .prediction_agent import PredictionAgent
 from .knowledge_agent import KnowledgeAgent
 from .emotion_agent import EmotionAgent
-from utils.data_models import AnalysisReport, StockData
+from .advisor_agent import AdvisorAgent
+from models.data_models import (
+    AnalysisReport,
+    StockData,
+    LiveUpdateResult,
+    PerformanceSummary,
+    PerformanceStage,
+    DataResult,
+    SentimentResult,
+    EmotionResult,
+    PredictionResult,
+    KnowledgeResult,
+    AdvisorDataLayer,
+    PricePredictionSignals,
+    SentimentSignals,
+    EmotionSignals,
+    NewsHeadlineItem,
+)
+
+
+@dataclass
+class _LivePipelineBundle:
+    """Single pass of data + NLP + prediction for live UI and advisor."""
+
+    ticker: str
+    timestamp: datetime
+    data_result: DataResult
+    sentiment_result: SentimentResult
+    emotion_result: EmotionResult
+    prediction_result: Optional[PredictionResult]
+    latest_price: Optional[float]
 
 
 class OrchestratorAgent:
-    """Master agent that coordinates the entire analysis workflow"""
-    
-    def __init__(self):
-        """Initialize the orchestrator with all sub-agents"""
+    """Coordinates end-to-end analysis and shared sub-agents for the HTTP/WebSocket stack."""
+
+    def __init__(self) -> None:
+        """Construct sub-agents (data, sentiment, prediction, knowledge, emotion, advisor)."""
         self.logger = logging.getLogger(__name__)
         
         # Initialize all agents
         self.logger.info("Initializing all agents...")
         
-        self.data_agent = DataGatheringAgent()
+        self.data_agent = DataAgent()
         self.sentiment_agent = SentimentAgent()
-        self.prediction_agent = PricePredictionAgent()
+        self.prediction_agent = PredictionAgent()
         self.knowledge_agent = KnowledgeAgent()
         self.emotion_agent = EmotionAgent()
+        self.advisor_agent = AdvisorAgent()
         
         self.logger.info("All agents initialized successfully")
     
@@ -111,9 +149,16 @@ class OrchestratorAgent:
         
         return all_texts
     
-    def _generate_executive_summary(self, ticker: str, stock_data: StockData,
-                                   sentiment_result, emotion_result, prediction_result, 
-                                   knowledge_result) -> str:
+    def _generate_executive_summary(
+        self,
+        ticker: str,
+        stock_data: StockData,
+        sentiment_result,
+        emotion_result,
+        prediction_result,
+        knowledge_result,
+        source_details: Optional[List] = None,
+    ) -> str:
         """
         Generate an executive summary of the analysis
         
@@ -166,7 +211,29 @@ class OrchestratorAgent:
             num_entities = len(knowledge_result.entities_extracted)
             # Emotions
             dominant_market_emotion = emotion_result.dominant_emotion
+
+            expl = getattr(prediction_result, "explainability", None)
+            explain_block = ""
+            if expl is not None and expl.drivers:
+                lines = "\n".join(
+                    f"  – {d.factor} (impact: {d.impact})" for d in expl.drivers[:6]
+                )
+                method = expl.attribution_method
+                explain_block = f"""
+Prediction explainability ({method}):
+{lines}
+• Sentiment role: {expl.sentiment_contribution[:280]}{"…" if len(expl.sentiment_contribution) > 280 else ""}
+"""
             
+            source_block = ""
+            if source_details:
+                lines = "\n".join(
+                    f"  • {getattr(s, 'source', '?')}: {getattr(s, 'status', '?')}"
+                    + (f" — {s.message}" if getattr(s, 'message', None) else "")
+                    for s in source_details
+                )
+                source_block = f"\nData sources (used / skipped / cached):\n{lines}\n"
+
             summary = f"""
 EXECUTIVE SUMMARY - {ticker} Analysis
 
@@ -175,7 +242,7 @@ Current Status:
 • Market Sentiment: {sentiment_desc.title()} (score: {sentiment_score:.2f})
 • Emotion Signal: {dominant_market_emotion.title()} (confidence: {emotion_result.confidence:.2f})
 • Predicted Next-Day Price: ${predicted_price:.2f} ({direction} of {abs(price_change_pct):.1f}%)
-
+{explain_block}{source_block}
 Key Insights:
 • Analyzed {len(stock_data.tweets)} tweets, {len(stock_data.reddit_posts)} Reddit posts, and {len(stock_data.news_articles)} news articles
 • Overall market sentiment is {sentiment_desc} with text-level emotion lean: {sentiment_result.dominant_emotion}; market emotion signal: {dominant_market_emotion}
@@ -196,77 +263,139 @@ Analysis completed on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self.logger.error(f"Error generating executive summary: {e}")
             return f"Analysis completed for {ticker} on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     
-    def run_analysis(self, ticker: str) -> AnalysisReport:
+    async def run_analysis_async(self, ticker: str) -> AnalysisReport:
         """
-        Run the complete multi-modal stock analysis
-        
-        Args:
-            ticker: Stock ticker symbol (e.g., 'TSLA')
-            
-        Returns:
-            AnalysisReport object with complete analysis results
+        Async pipeline for multi-modal stock analysis.
+
+        - Runs independent tasks in parallel where possible
+        - Uses asyncio.to_thread to wrap existing blocking agent logic
+        - Degrades gracefully when any source/model is unavailable
         """
-        self.logger.info(f"Starting complete analysis for {ticker}")
+        self.logger.info("OrchestratorAgent: starting complete analysis for %s", ticker)
         analysis_start_time = datetime.now()
-        
+        t0 = time.perf_counter()
+        stages: list[PerformanceStage] = []
+
         try:
             # Step 1: Data Gathering
-            self.logger.info("Step 1: Gathering all data...")
+            self.logger.info("OrchestratorAgent: Step 1 - Gathering all data")
             company_name = self._get_company_name(ticker)
-            raw_data = self.data_agent.gather_all_data(ticker, company_name)
-            
-            # Create StockData object
+            s = time.perf_counter()
+            data_result = await self.data_agent.gather_all_data(ticker, company_name)
+            stages.append(
+                PerformanceStage(
+                    name="data_gathering",
+                    duration_seconds=time.perf_counter() - s,
+                    succeeded=True,
+                )
+            )
+
+            # Normalize stock prices into the StockData contract
+            price_df = data_result.stock_prices
+            prices_dict = (
+                price_df.to_dict()
+                if price_df is not None and hasattr(price_df, "empty") and not price_df.empty
+                else {}
+            )
             stock_data = StockData(
                 ticker=ticker,
-                prices=raw_data['stock_prices'].to_dict() if not raw_data['stock_prices'].empty else {},
-                tweets=raw_data['tweets'],
-                reddit_posts=raw_data['reddit_posts'],
-                news_articles=raw_data['news_articles']
+                prices=prices_dict,
+                tweets=data_result.tweets,
+                reddit_posts=data_result.reddit_posts,
+                news_articles=data_result.news_articles,
             )
-            
-            # Step 2: Sentiment Analysis
-            self.logger.info("Step 2: Analyzing sentiment...")
-            all_text_data = self._combine_text_data(
-                stock_data.tweets, 
-                stock_data.reddit_posts, 
-                stock_data.news_articles
-            )
-            
-            sentiment_result = self.sentiment_agent.analyze(all_text_data)
 
-            # Step 2.5: Emotion Analysis
-            self.logger.info("Step 2.5: Detecting emotions...")
-            emotion_result = self.emotion_agent.analyze(all_text_data)
-            
-            # Step 3: Price Prediction
-            self.logger.info("Step 3: Predicting price...")
-            if not raw_data['stock_prices'].empty:
-                prediction_result = self.prediction_agent.predict(
-                    raw_data['stock_prices'], 
-                    sentiment_result.sentiment_score
+            # Step 2: Build combined text corpus
+            self.logger.info("OrchestratorAgent: Step 2 - Combining text for NLP")
+            all_text_data = self._combine_text_data(
+                stock_data.tweets,
+                stock_data.reddit_posts,
+                stock_data.news_articles,
+            )
+
+            # Step 2.5/4: Run independent NLP/knowledge steps in parallel
+            self.logger.info("OrchestratorAgent: Step 3 - Running sentiment/emotion/knowledge in parallel")
+            s_nlp = time.perf_counter()
+            sentiment_task = asyncio.create_task(self.sentiment_agent.analyze_async(all_text_data))
+            emotion_task = asyncio.create_task(self.emotion_agent.analyze_async(all_text_data))
+            knowledge_task = asyncio.create_task(self.knowledge_agent.analyze_async(stock_data.news_articles, ticker))
+
+            sentiment_result, emotion_result, knowledge_result = await asyncio.gather(
+                sentiment_task, emotion_task, knowledge_task
+            )
+            stages.append(
+                PerformanceStage(
+                    name="nlp_and_knowledge",
+                    duration_seconds=time.perf_counter() - s_nlp,
+                    succeeded=True,
+                )
+            )
+
+            # Step 3: Price Prediction (depends on sentiment + price history)
+            self.logger.info("OrchestratorAgent: Step 4 - Predicting price")
+            s_pred = time.perf_counter()
+            if price_df is not None and hasattr(price_df, "empty") and not price_df.empty:
+                prediction_result = await self.prediction_agent.predict(
+                    price_df,
+                    sentiment_result.sentiment_score,
+                    news_articles=data_result.news_articles,
+                    emotion_dominant=emotion_result.dominant_emotion,
+                    emotion_scores=emotion_result.emotion_scores,
+                )
+                stages.append(
+                    PerformanceStage(
+                        name="prediction",
+                        duration_seconds=time.perf_counter() - s_pred,
+                        succeeded=True,
+                    )
                 )
             else:
-                self.logger.warning("No stock price data available for prediction")
-                from utils.data_models import PredictionResult
+                self.logger.warning("OrchestratorAgent: No price history available - skipping prediction")
                 prediction_result = PredictionResult(
                     predicted_price=0.0,
-                    confidence_interval={'lower': 0.0, 'upper': 0.0},
+                    confidence_interval={"lower": 0.0, "upper": 0.0},
                     prediction_date=datetime.now(),
                     model_confidence=0.0,
-                    features_used=[]
+                    features_used=[],
                 )
-            
-            # Step 4: Knowledge Graph Analysis
-            self.logger.info("Step 4: Analyzing knowledge and articles...")
-            knowledge_result = self.knowledge_agent.analyze(stock_data.news_articles, ticker)
-            
-            # Step 5: Generate Executive Summary
-            self.logger.info("Step 5: Generating executive summary...")
+                stages.append(
+                    PerformanceStage(
+                        name="prediction",
+                        duration_seconds=time.perf_counter() - s_pred,
+                        succeeded=False,
+                        error="No price history available",
+                    )
+                )
+
+            # Step 5: Executive summary
+            self.logger.info("OrchestratorAgent: Step 5 - Generating executive summary")
+            s_summary = time.perf_counter()
             executive_summary = self._generate_executive_summary(
-                ticker, stock_data, sentiment_result, emotion_result, prediction_result, knowledge_result
+                ticker,
+                stock_data,
+                sentiment_result,
+                emotion_result,
+                prediction_result,
+                knowledge_result,
+                source_details=data_result.source_details,
             )
-            
-            # Create final report
+            stages.append(
+                PerformanceStage(
+                    name="summary_generation",
+                    duration_seconds=time.perf_counter() - s_summary,
+                    succeeded=True,
+                )
+            )
+
+            finished_at = datetime.now()
+            total_duration = time.perf_counter() - t0
+            perf = PerformanceSummary(
+                started_at=analysis_start_time,
+                finished_at=finished_at,
+                total_duration_seconds=total_duration,
+                stages=stages,
+            )
+
             analysis_report = AnalysisReport(
                 ticker=ticker,
                 analysis_date=analysis_start_time,
@@ -275,53 +404,66 @@ Analysis completed on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 emotion_analysis=emotion_result,
                 price_prediction=prediction_result,
                 knowledge_insights=knowledge_result,
-                executive_summary=executive_summary
+                executive_summary=executive_summary,
+                performance_summary=perf,
+                data_source_status=data_result.source_details,
             )
-            
-            analysis_duration = (datetime.now() - analysis_start_time).total_seconds()
-            self.logger.info(f"Analysis completed for {ticker} in {analysis_duration:.2f} seconds")
-            
+
+            self.logger.info("OrchestratorAgent: analysis complete for %s in %.2f seconds", ticker, total_duration)
             return analysis_report
-            
+
         except Exception as e:
-            self.logger.error(f"Error during analysis of {ticker}: {e}")
-            
-            # Return a minimal report with error information
-            from utils.data_models import (StockData, SentimentResult, 
-                                         PredictionResult, KnowledgeResult)
-            
+            self.logger.exception("OrchestratorAgent: Error during analysis of %s: %s", ticker, e)
+
+            # Degraded fallback report
             error_stock_data = StockData(
                 ticker=ticker,
                 prices={},
                 tweets=[],
                 reddit_posts=[],
-                news_articles=[]
+                news_articles=[],
             )
-            
+
             error_sentiment = SentimentResult(
                 sentiment_score=0.0,
                 dominant_emotion="unknown",
                 confidence=0.0,
                 individual_scores=[],
-                summary=f"Error occurred during sentiment analysis: {str(e)}"
+                summary=f"Error occurred during sentiment analysis: {str(e)}",
             )
-            
+
             error_prediction = PredictionResult(
                 predicted_price=0.0,
-                confidence_interval={'lower': 0.0, 'upper': 0.0},
+                confidence_interval={"lower": 0.0, "upper": 0.0},
                 prediction_date=datetime.now(),
                 model_confidence=0.0,
-                features_used=[]
+                features_used=[],
             )
-            
+
             error_knowledge = KnowledgeResult(
                 recommended_articles=[],
                 entities_extracted=[],
                 relationships_created=[],
-                graph_summary=f"Error occurred during knowledge analysis: {str(e)}"
+                graph_summary=f"Error occurred during knowledge analysis: {str(e)}",
             )
-            
-            from utils.data_models import EmotionResult
+
+            finished_at = datetime.now()
+            total_duration = time.perf_counter() - t0
+            perf = PerformanceSummary(
+                started_at=analysis_start_time,
+                finished_at=finished_at,
+                total_duration_seconds=total_duration,
+                stages=stages
+                or [
+                    PerformanceStage(
+                        name="pipeline",
+                        duration_seconds=total_duration,
+                        succeeded=False,
+                        error=str(e),
+                    )
+                ],
+            )
+
             return AnalysisReport(
                 ticker=ticker,
                 analysis_date=analysis_start_time,
@@ -331,12 +473,162 @@ Analysis completed on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     dominant_emotion="neutral",
                     emotion_scores={},
                     confidence=0.0,
-                    summary="Emotion analysis skipped due to error"
+                    summary="Emotion analysis skipped due to error",
                 ),
                 price_prediction=error_prediction,
                 knowledge_insights=error_knowledge,
-                executive_summary=f"Analysis failed for {ticker}: {str(e)}"
+                executive_summary=f"Analysis failed for {ticker}: {str(e)}",
+                performance_summary=perf,
+                data_source_status=[],
             )
+
+    def run_analysis(self, ticker: str) -> AnalysisReport:
+        """
+        Sync wrapper for existing CLI/UI usage.
+        """
+        try:
+            # If an event loop is already running in this thread, run in a background thread.
+            loop = asyncio.get_running_loop()
+            if loop.is_running():
+                import threading
+
+                result_holder = {}
+
+                def _worker() -> None:
+                    result_holder["result"] = asyncio.run(self.run_analysis_async(ticker))
+
+                t = threading.Thread(target=_worker, daemon=True)
+                t.start()
+                t.join()
+                return result_holder["result"]
+        except RuntimeError:
+            # No event loop running -> safe to asyncio.run directly
+            pass
+
+        return asyncio.run(self.run_analysis_async(ticker))
+
+    async def _run_live_pipeline_async(self, ticker: str) -> _LivePipelineBundle:
+        self.logger.info("OrchestratorAgent: running live pipeline for %s", ticker)
+        company_name = self._get_company_name(ticker)
+        data_result = await self.data_agent.gather_all_data(ticker, company_name)
+
+        price_df = data_result.stock_prices
+        latest_price = None
+        has_prices = price_df is not None and hasattr(price_df, "empty") and not price_df.empty
+        if has_prices:
+            latest_price = float(price_df["Close"].iloc[-1])
+
+        texts = self._combine_text_data(data_result.tweets, data_result.reddit_posts, data_result.news_articles)
+
+        sentiment_task = asyncio.create_task(self.sentiment_agent.analyze_async(texts))
+        emotion_task = asyncio.create_task(self.emotion_agent.analyze_async(texts))
+
+        sentiment_result, emotion_result = await asyncio.gather(sentiment_task, emotion_task)
+
+        prediction_result: Optional[PredictionResult] = None
+        if has_prices:
+            prediction_result = await self.prediction_agent.predict(
+                price_df,
+                sentiment_result.sentiment_score,
+                news_articles=data_result.news_articles,
+                emotion_dominant=emotion_result.dominant_emotion,
+                emotion_scores=emotion_result.emotion_scores,
+            )
+
+        return _LivePipelineBundle(
+            ticker=ticker,
+            timestamp=datetime.utcnow(),
+            data_result=data_result,
+            sentiment_result=sentiment_result,
+            emotion_result=emotion_result,
+            prediction_result=prediction_result,
+            latest_price=latest_price,
+        )
+
+    def _bundle_to_live_update(self, b: _LivePipelineBundle) -> LiveUpdateResult:
+        pred = b.prediction_result
+        return LiveUpdateResult(
+            timestamp=b.timestamp,
+            ticker=b.ticker,
+            latest_price=b.latest_price,
+            sentiment_score=b.sentiment_result.sentiment_score,
+            dominant_emotion=b.emotion_result.dominant_emotion,
+            predicted_price=pred.predicted_price if pred else None,
+            model_confidence=pred.model_confidence if pred else None,
+            tweets_count=len(b.data_result.tweets),
+            reddit_count=len(b.data_result.reddit_posts),
+            news_count=len(b.data_result.news_articles),
+        )
+
+    def _top_emotion_scores(self, emotion: EmotionResult, n: int = 5) -> Dict[str, float]:
+        if not emotion.emotion_scores:
+            return {}
+        items = sorted(emotion.emotion_scores.items(), key=lambda x: x[1], reverse=True)[:n]
+        return dict(items)
+
+    def _headlines_for_advisor(self, articles: List[Dict[str, str]]) -> List[NewsHeadlineItem]:
+        from utils import config as _cfg
+
+        max_n = int(getattr(_cfg, "ADVISOR_MAX_NEWS_HEADLINES", 8))
+        out: List[NewsHeadlineItem] = []
+        for a in articles[:max_n]:
+            title = (a.get("title") or "").strip()
+            if not title:
+                title = (a.get("description") or "").strip()[:200]
+            if not title:
+                continue
+            src = a.get("source") or a.get("name")
+            out.append(NewsHeadlineItem(title=title[:500], source=src))
+        return out
+
+    def _bundle_to_advisor_data_layer(self, b: _LivePipelineBundle) -> AdvisorDataLayer:
+        pred = b.prediction_result
+        ci_lo = ci_hi = None
+        if pred and pred.confidence_interval:
+            ci_lo = pred.confidence_interval.get("lower")
+            ci_hi = pred.confidence_interval.get("upper")
+        return AdvisorDataLayer(
+            ticker=b.ticker,
+            as_of=b.timestamp,
+            price_prediction=PricePredictionSignals(
+                latest_price=b.latest_price,
+                predicted_price=pred.predicted_price if pred else None,
+                model_confidence=pred.model_confidence if pred else None,
+                confidence_interval_lower=ci_lo,
+                confidence_interval_upper=ci_hi,
+                explainability=pred.explainability if pred else None,
+            ),
+            sentiment=SentimentSignals(
+                score=b.sentiment_result.sentiment_score,
+                summary=b.sentiment_result.summary,
+            ),
+            emotion=EmotionSignals(
+                dominant=b.emotion_result.dominant_emotion,
+                summary=b.emotion_result.summary,
+                top_scores=self._top_emotion_scores(b.emotion_result),
+            ),
+            key_news_events=self._headlines_for_advisor(b.data_result.news_articles),
+            source_counts={
+                "tweets": len(b.data_result.tweets),
+                "reddit_posts": len(b.data_result.reddit_posts),
+                "news_articles": len(b.data_result.news_articles),
+            },
+        )
+
+    async def get_live_snapshot_async(self, ticker: str) -> LiveUpdateResult:
+        """
+        Fast pipeline for the streaming dashboard.
+        (Data + combined NLP + prediction; skips full knowledge graph for speed.)
+        """
+        b = await self._run_live_pipeline_async(ticker)
+        return self._bundle_to_live_update(b)
+
+    async def get_advisor_data_layer_async(self, ticker: str) -> AdvisorDataLayer:
+        """
+        Same pipeline as live snapshot, structured for the reasoning advisor (signals + headlines).
+        """
+        b = await self._run_live_pipeline_async(ticker)
+        return self._bundle_to_advisor_data_layer(b)
     
     def get_analysis_status(self) -> Dict[str, str]:
         """

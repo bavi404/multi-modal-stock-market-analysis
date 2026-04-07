@@ -131,8 +131,10 @@ Thumbs.db
 # Project specific
 *.log
 *.json
-models/
 cache/
 temp/
 .env.local
 .env.production
+data/**/*.csv
+data/**/*.json
+data/**/*.parquet
